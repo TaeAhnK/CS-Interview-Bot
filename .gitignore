@@ -1,0 +1,38 @@
+# Python
+.venv/
+.venv-store-backup/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+.coverage
+.coverage.*
+htmlcov/
+
+# React, Vite, and Vitest
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+*.local
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Project folders
+/tests/
+/frontend/tests/
+/docs/
+/.agents/
+AGENTS.md
