@@ -9,22 +9,22 @@ import sys
 from collections.abc import Callable
 from dataclasses import fields
 from pathlib import Path
+from threading import Lock
 
 import webview
 
 from bot.evaluation import (
-    EvaluationConnectionError,
-    EvaluationError,
     EvaluationProvider,
     EvaluationRequest,
     EvaluationResponse,
     EvaluationAuthenticationError,
-    FakeEvaluationProvider,
+    InitialQuestionProvider,
 )
-from bot.evaluation_graph import evaluate_submission
 from bot.gemini_provider import GeminiClient, GeminiProvider
 from bot.interview_session import InterviewSessionEngine, SessionSnapshot
+from bot.knowledge_editor import KnowledgeEditor
 from bot.knowledge_loader import BUNDLED_KNOWLEDGE_DIR, KnowledgeLibrary, load_knowledge, user_knowledge_directory
+from bot.knowledge_parser import KnowledgeParseError, parse_knowledge_text
 from bot.settings_store import PublicSettings, SettingsError, SettingsStore, user_data_directory
 
 
@@ -35,42 +35,34 @@ APP_HOST = "cs-interview-bot.invalid"
 WINDOW_TITLE = os.environ.get("CS_INTERVIEW_BOT_WINDOW_TITLE", "CS Interview Bot")
 
 
-class _ValidatedProvider:
-    def __init__(self, provider: EvaluationProvider) -> None:
-        self._provider = provider
-
-    def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
-        try:
-            return evaluate_submission(request, self._provider)
-        except EvaluationError as error:
-            if str(error):
-                raise
-            raise EvaluationError("평가 제공자에 연결하지 못했습니다." if isinstance(
-                error, EvaluationConnectionError
-            ) else "평가 결과를 처리하지 못했습니다.") from error
-        except Exception as error:
-            raise EvaluationError("평가 결과를 처리하지 못했습니다.") from error
-
-
 class _DemoProvider:
     def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
-        return FakeEvaluationProvider({
-            "correct_points": [],
-            "missing_points": ["예시 평가입니다. 답변에 핵심 개념과 구체적인 사례를 포함했는지 확인해 보세요."],
-            "incorrect_points": [],
-            "follow_up_question": "이 개념이 적용되는 구체적인 예를 설명해 주세요." if not request.history else None,
-        }).evaluate(request)
+        return EvaluationResponse(
+            correct_points=[],
+            missing_points=["예시 평가입니다. 답변에 핵심 개념과 구체적인 사례를 포함했는지 확인해 보세요."],
+            incorrect_points=[],
+            follow_up_question="이 개념이 적용되는 구체적인 예를 설명해 주세요." if not request.history else None,
+        )
 
 
-def _public_snapshot(snapshot: SessionSnapshot) -> dict:
-    # The engine creates fresh record dictionaries for each snapshot.
-    for record in snapshot.records:
-        for turn in record["turns"]:
-            if turn.pop("evaluation_published"):
-                turn["evaluation"].pop("follow_up_question")
-            else:
-                del turn["evaluation"]
-    return {field.name: getattr(snapshot, field.name) for field in fields(snapshot)}
+class _SavedGeminiProvider:
+    def __init__(self, model: str, settings: SettingsStore, client: GeminiClient) -> None:
+        self._model = model
+        self._settings = settings
+        self._client = client
+
+    def _provider(self) -> GeminiProvider:
+        try:
+            key = self._settings.get_key_for_provider("gemini")
+        except SettingsError:
+            raise EvaluationAuthenticationError("저장된 Gemini 키를 읽지 못했습니다. 키를 다시 등록해 주세요.") from None
+        return GeminiProvider(self._model, key or "", client=self._client)
+
+    def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
+        return self._provider().evaluate(request)
+
+    def generate_initial_question(self, topic: str, unit: str, concept: str) -> str:
+        return self._provider().generate_initial_question(topic, unit, concept)
 
 
 class PythonBridge:
@@ -84,43 +76,101 @@ class PythonBridge:
         knowledge_directory: Path | None = None,
         bundled_knowledge_directory: Path | None = BUNDLED_KNOWLEDGE_DIR,
     ) -> None:
+        directory = knowledge_directory or user_knowledge_directory()
+        self._knowledge_directory = directory
         self._knowledge: KnowledgeLibrary = load_knowledge(
-            knowledge_directory or user_knowledge_directory(),
+            directory,
             bundled_directory=bundled_knowledge_directory,
         )
+        self._knowledge_editor = KnowledgeEditor(directory)
+        self._knowledge_lock = Lock()
+        self._last_reload_id: str | None = None
         self._session = InterviewSessionEngine.from_documents(self._knowledge.documents)
-        self._injected_provider = provider is not None
-        self._provider = _ValidatedProvider(provider if provider is not None else _DemoProvider())
+        self._injected_provider = provider
+        self._provider = provider if provider is not None else _DemoProvider()
         self._settings = settings_store or SettingsStore(user_data_directory())
         self._gemini_client = GeminiClient()
 
-    @staticmethod
-    def ping() -> dict[str, str]:
-        return {"status": "ok"}
+    def interview_state(self, include_library: bool = False) -> dict:
+        if not include_library:
+            return self._interview_response(self._session.snapshot(include_scope=True))
+        with self._knowledge_lock:
+            return {
+                **self._interview_response(self._session.snapshot(include_scope=True)),
+                "library": self.learning_data(),
+                "reload_id": self._last_reload_id,
+            }
 
-    def interview_state(self) -> dict:
-        return self._interview_response(self._session.snapshot())
+    def interview_busy(self) -> bool:
+        return self._session.is_busy()
 
     def _interview_response(self, snapshot: SessionSnapshot, ready_mode: str | None = None) -> dict:
         mode = snapshot.provider_id or ready_mode or ("gemini" if self._ready_gemini_model() is not None else "fake")
-        response = _public_snapshot(snapshot)
+        response = {field.name: getattr(snapshot, field.name) for field in fields(snapshot)}
+        if snapshot.scope_ids is None:
+            del response["scope_ids"]
+        if not snapshot.question_changed:
+            del response["question_changed"]
+        if snapshot.submission_blocked is None:
+            del response["submission_blocked"]
         response["evaluation_mode"] = mode
+        response["question_generation_available"] = self._can_generate_questions(mode)
         return response
 
     def learning_data(self) -> dict:
+        return self._learning_data(self._knowledge)
+
+    @staticmethod
+    def _learning_data(library: KnowledgeLibrary) -> dict:
         return {
-            "topics": self._knowledge.study_documents(),
+            "topics": library.study_documents(),
             "errors": [
                 {"filename": error.filename, "detail": error.detail}
-                for error in self._knowledge.errors
+                for error in library.errors
             ],
         }
+
+    def reload_knowledge(self, reload_id: str | None = None) -> dict:
+        with self._knowledge_lock:
+            if reload_id is not None and reload_id == self._last_reload_id:
+                return {"library": self.learning_data(), "interview": self.interview_state()}
+            library = load_knowledge(self._knowledge_directory, bundled_directory=None)
+            data = self._learning_data(library)
+            snapshot = self._session.reload_documents(library.documents)
+            self._knowledge = library
+            self._last_reload_id = reload_id
+            return {"library": data, "interview": self._interview_response(snapshot)}
+
+    def list_knowledge_files(self) -> dict:
+        return self._knowledge_editor.list_files()
+
+    def parse_knowledge_text(self, topic_name: str, body: str) -> dict:
+        try:
+            document = parse_knowledge_text(topic_name, body)
+        except KnowledgeParseError as error:
+            return {"ok": False, "error": error.as_dict()}
+        return {"ok": True, "document": document.model_dump(mode="json")}
+
+    def open_knowledge_file(self, filename: str) -> dict:
+        return self._knowledge_editor.open_file(filename)
+
+    def save_knowledge_file(
+        self,
+        document: dict,
+        filename: str | None = None,
+        revision: str | None = None,
+        overwrite: bool = False,
+    ) -> dict:
+        return self._knowledge_editor.save_file(document, filename, revision, overwrite)
 
     def set_interview_scope(self, concept_ids: list[str]) -> dict:
         return self._interview_response(self._session.set_scope(concept_ids))
 
+    def restart_interview(self) -> dict:
+        return self._interview_response(self._session.restart())
+
     def _ready_gemini_model(self, settings: PublicSettings | None = None) -> str | None:
-        if self._injected_provider:
+        if self._injected_provider is not None:
             return None
         if settings is None:
             try:
@@ -135,39 +185,40 @@ class PythonBridge:
         self._session.redraw_question()
         return self.interview_state()
 
-    def submit_answer(self, answer: str, expected_mode: str = "fake", record_start: int = 0) -> dict:
+    def submit_answer(
+        self, answer: str, expected_mode: str = "fake", record_start: int = 0,
+        expected_question_version: int | None = None,
+    ) -> dict:
         provider_id = self._session.provider_id
         model = self._ready_gemini_model() if provider_id is None else None
         mode = provider_id or ("gemini" if model is not None else "fake")
-        if expected_mode != mode:
-            return {
-                **self._interview_response(self._session.snapshot(record_start=record_start), ready_mode=mode),
-                "submission_blocked": "평가 방식이 바뀌었습니다. 안내를 확인하고 다시 제출해 주세요.",
-            }
         provider = None
-        if provider_id is None:
-            provider = _ValidatedProvider(self._evaluate_with_saved_gemini(model)) if model is not None else self._provider
-        return self._interview_response(self._session.submit(answer, mode, provider, record_start=record_start))
+        if model is not None:
+            provider = self._saved_gemini_provider(model)
+        elif provider_id is None:
+            provider = self._provider
+        snapshot = self._session.submit(
+            answer, mode, provider, record_start=record_start,
+            expected_question_version=expected_question_version, expected_mode=expected_mode,
+        )
+        return self._interview_response(snapshot, ready_mode=mode if snapshot.submission_blocked else None)
 
-    def _evaluate_with_saved_gemini(self, model: str) -> EvaluationProvider:
-        settings = self._settings
-        client = self._gemini_client
+    def _can_generate_questions(self, mode: str) -> bool:
+        return mode == "gemini" or isinstance(self._injected_provider, InitialQuestionProvider)
 
-        class SavedGemini:
-            def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
-                try:
-                    key = settings.get_key_for_provider("gemini")
-                except SettingsError:
-                    raise EvaluationAuthenticationError("저장된 Gemini 키를 읽지 못했습니다. 키를 다시 등록해 주세요.") from None
-                return GeminiProvider(model, key or "", client=client).evaluate(request)
-
-        return SavedGemini()
+    def _saved_gemini_provider(self, model: str) -> _SavedGeminiProvider:
+        return _SavedGeminiProvider(model, self._settings, self._gemini_client)
 
     def retry_answer(self, record_start: int = 0) -> dict:
         return self._interview_response(self._session.retry(record_start=record_start))
 
-    def next_concept(self, record_start: int = 0) -> dict:
-        return self._interview_response(self._session.skip_concept(record_start=record_start))
+    def question_generation(self) -> dict[str, int | str] | None:
+        return self._session.question_generation()
+
+    def next_concept(self, record_start: int = 0, generation_token: int | None = None) -> dict:
+        return self._interview_response(self._session.skip_concept(
+            record_start=record_start, expected_generation=generation_token,
+        ))
 
     def end_interview(self, record_start: int = 0) -> dict:
         return self._interview_response(self._session.end(record_start=record_start))
@@ -179,6 +230,7 @@ class PythonBridge:
             return {
                 "ok": True,
                 "evaluation_mode": mode,
+                "question_generation_available": self._can_generate_questions(mode),
                 "settings": {
                     "provider": settings.provider,
                     "models": settings.models,
@@ -267,11 +319,20 @@ def _run_window(document: Path, bridge: PythonBridge) -> None:
     document = Path(document).resolve()
     url = f"https://{APP_HOST}/{document.name}"
     methods = (
+        bridge.interview_state,
+        bridge.interview_busy,
         bridge.learning_data,
+        bridge.reload_knowledge,
+        bridge.parse_knowledge_text,
+        bridge.list_knowledge_files,
+        bridge.open_knowledge_file,
+        bridge.save_knowledge_file,
         bridge.set_interview_scope,
+        bridge.restart_interview,
         bridge.redraw_question,
         bridge.submit_answer,
         bridge.retry_answer,
+        bridge.question_generation,
         bridge.next_concept,
         bridge.end_interview,
         bridge.settings_state,

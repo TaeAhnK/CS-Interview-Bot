@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -57,10 +57,37 @@ class EvaluationResponseFormatError(EvaluationError):
     """The provider response could not be parsed or validated."""
 
 
+class QuestionGenerationUnavailableError(EvaluationError):
+    """No selected provider supports initial question generation."""
+
+
 class EvaluationProvider(Protocol):
     def evaluate(self, request: EvaluationRequest) -> EvaluationResponse:
         """Evaluate one submission or raise an EvaluationError subclass."""
         ...
+
+
+@runtime_checkable
+class InitialQuestionProvider(Protocol):
+    def generate_initial_question(self, topic: str, unit: str, concept: str) -> str:
+        """Generate one question or raise an EvaluationError subclass."""
+        ...
+
+
+def generate_initial_question(
+    provider: EvaluationProvider | InitialQuestionProvider | None,
+    topic: str,
+    unit: str,
+    concept: str,
+) -> str:
+    """Request and validate an initial question from the selected provider."""
+    if not isinstance(provider, InitialQuestionProvider):
+        raise QuestionGenerationUnavailableError("첫 질문을 생성할 수 있는 AI 제공자를 설정해 주세요.")
+
+    question = provider.generate_initial_question(topic, unit, concept)
+    if not isinstance(question, str) or not question.strip():
+        raise EvaluationResponseFormatError("AI 제공자가 유효한 첫 질문을 반환하지 않았습니다.")
+    return question.strip()
 
 
 class FakeEvaluationProvider:

@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "topic": {
+    "id": "p15-common-knowledge",
+    "name": "공통 스키마 샘플",
+    "units": [
+      {
+        "id": "schema-cases",
+        "name": "스키마 사례",
+        "concepts": [
+          {
+            "id": "question-with-answer",
+            "name": "질문과 답안이 있는 개념",
+            "questions": [
+              {
+                "id": "definition",
+                "prompt": "공통 스키마 샘플은 무엇을 보여 주나요?",
+                "example_answer": "질문과 예시 답안이 모두 있는 개념을 보여 줍니다."
+              }
+            ]
+          },
+          {
+            "id": "question-without-answer",
+            "name": "질문만 있는 개념",
+            "questions": [
+              {
+                "id": "purpose",
+                "prompt": "이 개념의 목적은 무엇인가요?"
+              }
+            ]
+          },
+          {
+            "id": "without-questions",
+            "name": "질문이 없는 개념",
+            "questions": []
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -64,6 +64,7 @@ button:disabled { cursor: not-allowed; }
 .tree-branch svg { @apply absolute left-2 top-1/2 -translate-y-1/2 text-slate-500; transition: rotate 150ms var(--control-ease); }
 .tree-branch[aria-expanded="true"] svg { rotate: 90deg; }
 .tree-children { @apply ml-4 border-l border-slate-200 pl-4; }
+.tree-preview-branch { @apply min-h-9 cursor-pointer rounded px-2 py-2 text-sm leading-5 font-medium text-slate-800 hover:bg-slate-100; }
 .tree-leaf { @apply pl-2; }
 .tree-leaf:has([aria-pressed="true"]) { @apply bg-blue-50; }
 .tree-leaf button { @apply flex min-w-0 flex-1 items-center justify-between gap-2 break-words text-left text-[13px] leading-5 text-slate-600; }
@@ -71,6 +72,21 @@ button:disabled { cursor: not-allowed; }
 .tree-question-count { @apply shrink-0 text-xs tabular-nums text-slate-500; }
 
 .workspace { min-height: 100vh; padding-top: var(--header-height); padding-left: var(--sidebar-width); }
+.authoring-workspace { padding-left: 0; }
+.authoring-panel { @apply px-4 py-6 wrap-anywhere sm:px-8; }
+.authoring-workspace .settings-field { @apply block text-sm font-medium text-slate-700; }
+.authoring-file-picker { @apply grid items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto]; }
+.authoring-file-picker :is(select, button) { @apply min-h-10; }
+.authoring-workspace .authoring-outline {
+  @apply min-h-40 resize-y bg-slate-50 leading-6;
+  font-family: inherit;
+}
+.authoring-panel kbd { @apply rounded border border-slate-200 bg-slate-50 px-1 py-0.5 text-xs whitespace-nowrap text-slate-700; }
+.authoring-preview { @apply rounded-xl border border-slate-200 bg-slate-50 p-2; }
+.authoring-preview-unit { @apply ml-3 border-l border-slate-300 pl-2 sm:ml-4 sm:pl-3; }
+.authoring-preview-concept { @apply grid gap-x-4 gap-y-1 px-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-baseline; }
+.authoring-preview-concept + .authoring-preview-concept { @apply border-t border-slate-200; }
+.authoring-preview-counts { @apply grid w-fit grid-cols-[3.5rem_auto] gap-2 text-xs leading-5 tabular-nums text-slate-600; }
 .workspace-inner { @apply mx-auto flex max-w-[920px] flex-col px-5 pt-9 pb-7 sm:px-8 lg:px-12 lg:pt-10; min-height: calc(100vh - var(--header-height)); }
 .panel { @apply rounded-2xl border border-slate-200 bg-white; box-shadow: 0 2px 8px rgb(15 23 42 / 3%); }
 .question-header { @apply border-b border-slate-100 px-6 py-5 sm:px-8; }
