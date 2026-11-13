@@ -59,7 +59,7 @@ export type KnowledgeFileError = {
   ok: false
   error: 'duplicate_topic' | 'confirmation_required' | 'file_changed' | 'topic_id_changed'
     | 'invalid_document' | 'file_not_found' | 'read_failed' | 'save_failed'
-    | 'file_too_large' | 'library_too_large' | 'library_concept_limit' | 'duplicate_check_failed'
+    | 'file_too_large' | 'library_too_large' | 'library_file_limit' | 'duplicate_check_failed'
   filename?: string
   issues?: { path: (string | number)[]; message: string }[]
   omitted_issues?: number

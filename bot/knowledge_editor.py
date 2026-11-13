@@ -16,10 +16,9 @@ from bot.knowledge_loader import (
     KnowledgeLibraryLimitExceeded,
     KnowledgeReadBudget,
     MAX_REPORTED_ERRORS,
-    MAX_KNOWLEDGE_CONCEPTS,
+    MAX_KNOWLEDGE_FILES,
     bounded_validation_issues,
     check_knowledge_file_size,
-    count_knowledge_concepts,
     is_knowledge_file,
     knowledge_json_files,
     read_knowledge_bytes,
@@ -73,7 +72,7 @@ def _document_response(path: Path, document: KnowledgeDocument, contents: bytes)
 class KnowledgeEditor:
     def __init__(self, directory: Path) -> None:
         self._directory = directory
-        self._topic_cache: dict[str, tuple[bytes, tuple[str, str, int] | None]] = {}
+        self._topic_cache: dict[str, tuple[bytes, tuple[str, str] | None]] = {}
 
     def _files(self, root: KnowledgeDirectory) -> dict[str, Path]:
         return {
@@ -91,7 +90,7 @@ class KnowledgeEditor:
 
     def _topic_key(
         self, path: Path, budget: KnowledgeReadBudget, root: KnowledgeDirectory
-    ) -> tuple[str, str, int] | None:
+    ) -> tuple[str, str] | None:
         contents = read_knowledge_bytes(path, budget, root=root)
         # External editors can change bytes without changing the size or timestamp.
         digest = hashlib.sha256(contents).digest()
@@ -100,7 +99,7 @@ class KnowledgeEditor:
             return cached[1]
         try:
             document = KnowledgeDocument.model_validate_json(contents.decode("utf-8"))
-            key = (document.topic.id, _topic_name(document.topic), count_knowledge_concepts(document))
+            key = (document.topic.id, _topic_name(document.topic))
         except (ValidationError, UnicodeError):
             key = None
         self._topic_cache[path.name] = (digest, key)
@@ -184,7 +183,7 @@ class KnowledgeEditor:
         for name in self._topic_cache.keys() - files.keys():
             del self._topic_cache[name]
         topic_name = _topic_name(document.topic)
-        concept_count = count_knowledge_concepts(document)
+        file_count = 1
         for name, path in files.items():
             if name == filename:
                 continue
@@ -200,10 +199,10 @@ class KnowledgeEditor:
             if key is not None and (key[0] == document.topic.id or key[1] == topic_name):
                 return {"ok": False, "error": "duplicate_topic", "filename": name}
             if key is not None:
-                concept_count += key[2]
+                file_count += 1
 
-        if concept_count > MAX_KNOWLEDGE_CONCEPTS:
-            return {"ok": False, "error": "library_concept_limit"}
+        if filename is None and file_count > MAX_KNOWLEDGE_FILES:
+            return {"ok": False, "error": "library_file_limit"}
 
         with root.stage(contents) as publish:
             if filename is None:

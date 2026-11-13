@@ -21,7 +21,7 @@ BUNDLED_KNOWLEDGE_DIR = Path(__file__).resolve().parent.parent / "data" / "knowl
 INITIALIZATION_MARKER = ".initialized"
 MAX_KNOWLEDGE_FILE_BYTES = 2 * 1024 * 1024
 MAX_KNOWLEDGE_LIBRARY_BYTES = 32 * 1024 * 1024
-MAX_KNOWLEDGE_CONCEPTS = 100
+MAX_KNOWLEDGE_FILES = 100
 MAX_REPORTED_ERRORS = 50
 MAX_ERROR_DETAIL = 400
 DUPLICATE_FILENAME_EXAMPLES = 3
@@ -173,10 +173,6 @@ def check_knowledge_file_size(size: int) -> None:
         raise KnowledgeFileTooLarge("학습 자료 파일당 읽기 한도(2 MiB)를 초과합니다.")
 
 
-def count_knowledge_concepts(document: KnowledgeDocument) -> int:
-    return sum(len(unit.concepts) for unit in document.topic.units)
-
-
 def read_knowledge_bytes(
     path: Path, budget: KnowledgeReadBudget | None = None, *, root: KnowledgeDirectory | None = None
 ) -> bytes:
@@ -243,14 +239,11 @@ def load_knowledge(
             del documents[path]
 
     accepted = []
-    remaining_concepts = MAX_KNOWLEDGE_CONCEPTS
     for path, document in documents.items():
-        count = count_knowledge_concepts(document)
-        if count > remaining_concepts:
-            errors.add(path.name, f"학습 자료 전체 개념 한도({MAX_KNOWLEDGE_CONCEPTS}개)를 초과합니다.")
+        if len(accepted) >= MAX_KNOWLEDGE_FILES:
+            errors.add(path.name, f"학습 자료 주제 파일 한도({MAX_KNOWLEDGE_FILES}개)를 초과합니다.")
             continue
         accepted.append(document)
-        remaining_concepts -= count
     return KnowledgeLibrary(tuple(accepted), errors.report())
 
 

@@ -14,7 +14,7 @@ const fileErrors: Record<KnowledgeFileError['error'], string> = {
   save_failed: '지식 파일을 저장하지 못했습니다.',
   file_too_large: '지식 파일은 최대 2 MiB까지 열거나 저장할 수 있습니다.',
   library_too_large: '저장하면 학습 자료 전체 한도인 32 MiB를 초과합니다.',
-  library_concept_limit: '저장하면 학습 자료 전체 개념 한도인 100개를 초과합니다.',
+  library_file_limit: '새로 저장하면 학습 자료 주제 파일 한도인 100개를 초과합니다.',
 }
 
 const KnowledgePreview = memo(function KnowledgePreview({ document }: { document: KnowledgeTopic }) {
