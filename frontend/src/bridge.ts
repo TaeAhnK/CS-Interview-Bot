@@ -31,7 +31,70 @@ export type InterviewState = {
 export type QuestionGeneration = { token: number; concept_name: string }
 
 export type InterviewSnapshot = InterviewState & { scope_ids: string[] }
-export type InterviewBridge = KnowledgeAuthoringBridge & {
+export type TtsStatus = {
+  request_id: number
+  status: 'idle' | 'synthesizing' | 'playing' | 'completed' | 'stopped' | 'failed'
+  error: 'invalid_request' | 'model_missing' | 'engine_unavailable' | 'synthesis_failed'
+    | 'audio_unavailable' | 'device_unavailable' | 'playback_failed' | null
+}
+
+export type TtsBridge = {
+  tts_devices: () => Promise<{ ok: true; devices: { id: string; name: string }[] } | { ok: false; error: 'audio_unavailable' }>
+  tts_play: (text: string, deviceId?: string | null, volume?: number) => Promise<TtsStatus>
+  tts_play_study: (question: string, answer: string, deviceId: string | null, volume: number) => Promise<TtsStatus>
+  tts_test: (deviceId: string | null, volume: number) => Promise<TtsStatus>
+  tts_status: () => Promise<TtsStatus>
+  tts_stop: (requestId?: number) => Promise<TtsStatus>
+}
+
+export type MicrophoneError = 'audio_unavailable' | 'device_unavailable' | 'permission_denied'
+  | 'capture_failed' | 'empty_recording' | 'invalid_request' | 'busy' | 'closed' | 'stale_request'
+
+export type MicrophoneStatus = { ok: false; error: MicrophoneError } | {
+  ok: true
+  request_id: number
+  status: 'starting' | 'recording' | 'stopping' | 'completed' | 'cancelled' | 'failed'
+  error: MicrophoneError | null
+  reason: 'manual' | 'limit' | null
+  elapsed_ms: number
+  level: number
+  meter_only: boolean
+  has_recording: boolean
+}
+
+export type MicrophoneBridge = {
+  mic_devices: () => Promise<{ ok: true; devices: { id: string; name: string }[] } | { ok: false; error: MicrophoneError }>
+  mic_start: (deviceId?: string | null, meterOnly?: boolean) => Promise<MicrophoneStatus>
+  mic_status: (requestId: number) => Promise<MicrophoneStatus>
+  mic_stop: (requestId: number) => Promise<MicrophoneStatus>
+  mic_cancel: (requestId: number) => Promise<MicrophoneStatus>
+}
+
+export type TranscriptionError = 'closed' | 'busy' | 'recording_unavailable' | 'stale_request'
+  | 'result_unavailable' | 'invalid_audio' | 'engine_unavailable' | 'model_missing'
+  | 'timeout' | 'transcription_failed'
+
+type TranscriptionRejection = { ok: false; error: TranscriptionError }
+
+export type TranscriptionStatus = TranscriptionRejection | {
+  ok: true
+  request_id: number
+  recording_id: number
+  status: 'transcribing' | 'completed' | 'empty' | 'failed' | 'cancelled'
+  error: TranscriptionError | null
+  has_result: boolean
+}
+
+export type TranscriptionBridge = {
+  stt_start: (recordingId: number) => Promise<TranscriptionStatus>
+  stt_status: (requestId: number) => Promise<TranscriptionStatus>
+  stt_take_result: (requestId: number) => Promise<TranscriptionRejection | {
+    ok: true; request_id: number; recording_id: number; text: string
+  }>
+  stt_cancel: (requestId: number) => Promise<TranscriptionStatus>
+}
+
+export type InterviewBridge = KnowledgeAuthoringBridge & Partial<MicrophoneBridge & TranscriptionBridge> & {
   interview_state: (includeLibrary?: boolean) => Promise<InterviewSnapshot & { library?: KnowledgeLibraryData; reload_id?: string | null }>
   interview_busy: () => Promise<boolean>
   learning_data: () => Promise<KnowledgeLibraryData>
@@ -45,6 +108,9 @@ export type InterviewBridge = KnowledgeAuthoringBridge & {
   end_interview: (recordStart?: number) => Promise<InterviewState>
   settings_state: () => Promise<SettingsResult>
   save_provider_settings: (provider: ProviderId, models: Record<ProviderId, string>) => Promise<SettingsResult>
+  save_interview_auto_read?: (enabled: boolean) => Promise<SettingsResult>
+  save_tts_output?: (deviceId: string | null, volume: number) => Promise<SettingsResult>
+  save_mic_input?: (deviceId: string | null) => Promise<SettingsResult>
   save_api_key: (provider: ProviderId, key: string) => Promise<SettingsResult>
   delete_api_key: (provider: ProviderId) => Promise<SettingsResult>
   open_knowledge_folder: () => Promise<{ ok: boolean; error?: SettingsErrorCode }>
@@ -86,9 +152,13 @@ export type SettingsErrorCode =
   | 'settings_unavailable' | 'invalid_settings' | 'invalid_key' | 'invalid_provider'
   | 'write_failed' | 'folder_open_failed'
 export type SettingsData = {
+  tts_device_id?: string | null
+  tts_volume?: number
+  mic_device_id?: string | null
   provider: ProviderId
   models: Record<ProviderId, string>
   key_registered: Record<ProviderId, boolean>
+  interview_auto_read?: boolean
 }
 export type SettingsResult =
   | { ok: true; settings: SettingsData; evaluation_mode: InterviewState['evaluation_mode']; question_generation_available?: boolean }

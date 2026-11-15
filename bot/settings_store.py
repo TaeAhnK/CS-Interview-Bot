@@ -7,10 +7,12 @@ import json
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from threading import Lock
 from typing import Protocol
+
+from bot.tts import valid_output_preferences
 
 
 PROVIDERS = ("gemini", "openai")
@@ -94,6 +96,20 @@ class PublicSettings:
     provider: str
     models: dict[str, str]
     key_registered: dict[str, bool]
+    interview_auto_read: bool = True
+    tts_device_id: str | None = None
+    tts_volume: float = 1.0
+    mic_device_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _Preferences:
+    provider: str = "gemini"
+    models: dict[str, str] = field(default_factory=DEFAULT_MODELS.copy)
+    interview_auto_read: bool = True
+    tts_device_id: str | None = None
+    tts_volume: float = 1.0
+    mic_device_id: str | None = None
 
 
 def user_data_directory() -> Path:
@@ -122,12 +138,11 @@ class SettingsStore:
             self.protector = WindowsDPAPIProtector()
         return self.protector
 
-    def _read_preferences(self) -> tuple[str, dict[str, str]]:
-        defaults = ("gemini", dict(DEFAULT_MODELS))
+    def _read_preferences(self) -> _Preferences:
         try:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return defaults
+            return _Preferences()
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise SettingsError("settings_unavailable") from error
         provider = data.get("provider") if isinstance(data, dict) else None
@@ -140,7 +155,20 @@ class SettingsStore:
             if not isinstance(model, str) or not model.strip() or len(model) > 120:
                 raise SettingsError("settings_unavailable")
             clean_models[name] = model.strip()
-        return provider, clean_models
+        device_id, volume = data.get("tts_device_id"), data.get("tts_volume", 1.0)
+        if not valid_output_preferences(device_id, volume):
+            device_id, volume = None, 1.0
+        mic_id = data.get("mic_device_id")
+        if not isinstance(mic_id, str) or not mic_id.strip():
+            mic_id = None
+        return _Preferences(
+            provider=provider,
+            models=clean_models,
+            interview_auto_read=data.get("interview_auto_read") is not False,
+            tts_device_id=device_id,
+            tts_volume=volume,
+            mic_device_id=mic_id,
+        )
 
     def _read_keys(self) -> dict[str, str]:
         try:
@@ -181,14 +209,51 @@ class SettingsStore:
                     pass
             raise SettingsError("write_failed") from error
 
+    def tts_output(self) -> tuple[str | None, float]:
+        with self._lock:
+            preferences = self._read_preferences()
+            return preferences.tts_device_id, preferences.tts_volume
+
     def public_settings(self) -> PublicSettings:
         with self._lock:
-            provider, models = self._read_preferences()
-            return self._public_settings(provider, models, self._read_keys())
+            preferences = self._read_preferences()
+            return self._public_settings(self._read_keys(), preferences)
 
     @staticmethod
-    def _public_settings(provider: str, models: dict[str, str], keys: dict[str, str]) -> PublicSettings:
-        return PublicSettings(provider, models, {name: name in keys for name in PROVIDERS})
+    def _public_settings(keys: dict[str, str], preferences: _Preferences) -> PublicSettings:
+        return PublicSettings(
+            key_registered={name: name in keys for name in PROVIDERS},
+            **asdict(preferences),
+        )
+
+    def _save_preferences(self, *, recover_invalid: bool = False, **changes) -> PublicSettings:
+        with self._lock:
+            try:
+                preferences = self._read_preferences()
+            except SettingsError:
+                if not recover_invalid:
+                    raise
+                preferences = _Preferences()
+            keys = self._read_keys()
+            updated = replace(preferences, **changes)
+            payload = json.dumps(asdict(updated), ensure_ascii=False, indent=2).encode("utf-8")
+            self._atomic_write(self.settings_path, payload)
+            return self._public_settings(keys, updated)
+
+    def save_interview_auto_read(self, enabled: bool) -> PublicSettings:
+        if not isinstance(enabled, bool):
+            raise SettingsError("invalid_settings")
+        return self._save_preferences(interview_auto_read=enabled)
+
+    def save_tts_output(self, device_id: str | None, volume: float) -> PublicSettings:
+        if not valid_output_preferences(device_id, volume):
+            raise SettingsError("invalid_settings")
+        return self._save_preferences(tts_device_id=device_id, tts_volume=volume)
+
+    def save_mic_input(self, mic_id: str | None) -> PublicSettings:
+        if mic_id is not None and (not isinstance(mic_id, str) or not mic_id.strip()):
+            raise SettingsError("invalid_settings")
+        return self._save_preferences(mic_device_id=mic_id)
 
     def save_preferences(self, provider: str, models: dict[str, str]) -> PublicSettings:
         if provider not in PROVIDERS or not isinstance(models, dict):
@@ -199,21 +264,17 @@ class SettingsStore:
             if not isinstance(value, str) or not value.strip() or len(value.strip()) > 120:
                 raise SettingsError("invalid_settings")
             normalized[name] = value.strip()
-        payload = json.dumps({"provider": provider, "models": normalized}, ensure_ascii=False, indent=2).encode("utf-8")
-        with self._lock:
-            keys = self._read_keys()
-            self._atomic_write(self.settings_path, payload)
-            return self._public_settings(provider, normalized, keys)
+        return self._save_preferences(recover_invalid=True, provider=provider, models=normalized)
 
     def set_key(self, provider: str, value: str) -> PublicSettings:
         if provider not in PROVIDERS or not isinstance(value, str) or not value.strip():
             raise SettingsError("invalid_key")
         with self._lock:
-            selected_provider, models = self._read_preferences()
+            preferences = self._read_preferences()
             keys = self._read_keys()
             keys[provider] = value.strip()
             self._write_keys(keys)
-            return self._public_settings(selected_provider, models, keys)
+            return self._public_settings(keys, preferences)
 
     def _write_keys(self, keys: dict[str, str]) -> None:
         if not keys:
@@ -236,11 +297,11 @@ class SettingsStore:
         if provider not in PROVIDERS:
             raise SettingsError("invalid_provider")
         with self._lock:
-            selected_provider, models = self._read_preferences()
+            preferences = self._read_preferences()
             keys = self._read_keys()
             keys.pop(provider, None)
             self._write_keys(keys)
-            return self._public_settings(selected_provider, models, keys)
+            return self._public_settings(keys, preferences)
 
     def get_key_for_provider(self, provider: str) -> str | None:
         if provider not in PROVIDERS:

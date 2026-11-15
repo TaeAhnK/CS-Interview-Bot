@@ -25,7 +25,14 @@ from bot.interview_session import InterviewSessionEngine, SessionSnapshot
 from bot.knowledge_editor import KnowledgeEditor
 from bot.knowledge_loader import BUNDLED_KNOWLEDGE_DIR, KnowledgeLibrary, load_knowledge, user_knowledge_directory
 from bot.knowledge_parser import KnowledgeParseError, parse_knowledge_text
+from bot.recording import MicrophoneCapture
 from bot.settings_store import PublicSettings, SettingsError, SettingsStore, user_data_directory
+from bot.supertonic_tts import SupertonicConfig, SupertonicSynthesizer
+from bot.transcription import SpeechRecognizer, TranscriptionService
+from bot.tts import SpeechPlayback
+from bot.whisper_cpp import WhisperCppConfig, WhisperCppRecognizer
+from bot.windows_audio_input import WindowsAudioInput
+from bot.windows_audio_output import WindowsAudioOutput
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,6 +40,13 @@ FRONTEND = ROOT / "frontend"
 APP_DOCUMENT = FRONTEND / "dist" / "index.html"
 APP_HOST = "cs-interview-bot.invalid"
 WINDOW_TITLE = os.environ.get("CS_INTERVIEW_BOT_WINDOW_TITLE", "CS Interview Bot")
+
+
+def _speech_playback() -> SpeechPlayback:
+    root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT
+    directory = os.environ.get("CS_INTERVIEW_BOT_TTS_MODEL_DIR")
+    config = SupertonicConfig(Path(directory) if directory else root / "models" / "supertonic-3")
+    return SpeechPlayback(SupertonicSynthesizer(config), WindowsAudioOutput())
 
 
 class _DemoProvider:
@@ -75,6 +89,9 @@ class PythonBridge:
         settings_store: SettingsStore | None = None,
         knowledge_directory: Path | None = None,
         bundled_knowledge_directory: Path | None = BUNDLED_KNOWLEDGE_DIR,
+        speech: SpeechPlayback | None = None,
+        microphone: MicrophoneCapture | None = None,
+        recognizer: SpeechRecognizer | None = None,
     ) -> None:
         directory = knowledge_directory or user_knowledge_directory()
         self._knowledge_directory = directory
@@ -90,6 +107,57 @@ class PythonBridge:
         self._provider = provider if provider is not None else _DemoProvider()
         self._settings = settings_store or SettingsStore(user_data_directory())
         self._gemini_client = GeminiClient()
+        self._speech = speech if speech is not None else _speech_playback()
+        self._microphone = microphone if microphone is not None else MicrophoneCapture(WindowsAudioInput())
+        if recognizer is None:
+            root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT
+            recognizer = WhisperCppRecognizer(WhisperCppConfig.from_app_root(root))
+        self._transcription = TranscriptionService(self._microphone, recognizer)
+
+    def stt_start(self, recording_id: int) -> dict:
+        return self._transcription.start(recording_id)
+
+    def stt_status(self, request_id: int) -> dict:
+        return self._transcription.status(request_id)
+
+    def stt_take_result(self, request_id: int) -> dict:
+        return self._transcription.take_result(request_id)
+
+    def stt_cancel(self, request_id: int) -> dict:
+        return self._transcription.cancel(request_id)
+
+    def mic_devices(self) -> dict:
+        return self._microphone.devices()
+
+    def mic_start(self, device_id: str | None = None, meter_only: bool = False) -> dict:
+        return self._microphone.start(device_id, meter_only)
+
+    def mic_status(self, request_id: int) -> dict:
+        return self._microphone.status(request_id)
+
+    def mic_stop(self, request_id: int) -> dict:
+        return self._microphone.stop(request_id)
+
+    def mic_cancel(self, request_id: int) -> dict:
+        return self._microphone.cancel(request_id)
+
+    def tts_devices(self) -> dict:
+        return self._speech.devices()
+
+    def tts_play(self, text: str, device_id: str | None = None, volume: float = 1.0) -> dict:
+        return self._speech.start(text, device_id, volume)
+
+    def tts_play_study(self, question: str, answer: str, device_id: str | None = None, volume: float = 1.0) -> dict:
+        return self._speech.start_study(question, answer, device_id, volume, self._settings.tts_output)
+
+    def tts_status(self) -> dict:
+        return self._speech.status()
+
+    def tts_test(self, device_id: str | None = None, volume: float = 1.0) -> dict:
+        return self._speech.start_test(device_id, volume)
+
+    def tts_stop(self, request_id: int | None = None) -> dict:
+        return self._speech.stop(request_id)
 
     def interview_state(self, include_library: bool = False) -> dict:
         if not include_library:
@@ -235,6 +303,10 @@ class PythonBridge:
                     "provider": settings.provider,
                     "models": settings.models,
                     "key_registered": settings.key_registered,
+                    "interview_auto_read": settings.interview_auto_read,
+                    "tts_device_id": settings.tts_device_id,
+                    "tts_volume": settings.tts_volume,
+                    "mic_device_id": settings.mic_device_id,
                 },
             }
         except SettingsError as error:
@@ -247,6 +319,15 @@ class PythonBridge:
 
     def save_provider_settings(self, provider: str, models: dict[str, str]) -> dict:
         return self._settings_response(lambda: self._settings.save_preferences(provider, models))
+
+    def save_interview_auto_read(self, enabled: bool) -> dict:
+        return self._settings_response(lambda: self._settings.save_interview_auto_read(enabled))
+
+    def save_tts_output(self, device_id: str | None, volume: float) -> dict:
+        return self._settings_response(lambda: self._settings.save_tts_output(device_id, volume))
+
+    def save_mic_input(self, device_id: str | None) -> dict:
+        return self._settings_response(lambda: self._settings.save_mic_input(device_id))
 
     def save_api_key(self, provider: str, key: str) -> dict:
         return self._settings_response(lambda: self._settings.set_key(provider, key))
@@ -262,6 +343,9 @@ class PythonBridge:
             return {"ok": False, "error": error.code}
 
     def _close(self) -> None:
+        self._transcription.close()
+        self._microphone.close()
+        self._speech.close()
         try:
             self._session.end()
         finally:
@@ -337,9 +421,27 @@ def _run_window(document: Path, bridge: PythonBridge) -> None:
         bridge.end_interview,
         bridge.settings_state,
         bridge.save_provider_settings,
+        bridge.save_tts_output,
+        bridge.save_mic_input,
+        bridge.save_interview_auto_read,
         bridge.save_api_key,
         bridge.delete_api_key,
         bridge.open_knowledge_folder,
+        bridge.tts_devices,
+        bridge.tts_play,
+        bridge.tts_play_study,
+        bridge.tts_test,
+        bridge.tts_status,
+        bridge.tts_stop,
+        bridge.mic_devices,
+        bridge.mic_start,
+        bridge.mic_status,
+        bridge.mic_stop,
+        bridge.mic_cancel,
+        bridge.stt_start,
+        bridge.stt_status,
+        bridge.stt_take_result,
+        bridge.stt_cancel,
     )
     allowed_methods = {method.__name__ for method in methods}
     restore_backend = None

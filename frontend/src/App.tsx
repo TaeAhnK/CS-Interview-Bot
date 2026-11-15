@@ -1,11 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ConceptRecord, InterviewBridge, InterviewState, KnowledgeLibraryData, ProviderId, QuestionGeneration, SettingsData, SettingsErrorCode, SettingsResult } from './bridge'
+import type { ConceptRecord, InterviewBridge, InterviewState, KnowledgeLibraryData, ProviderId, QuestionGeneration, SettingsData, SettingsErrorCode, SettingsResult, TtsBridge } from './bridge'
 import KnowledgeAuthoring from './KnowledgeAuthoring'
+import MicrophoneSettings from './MicrophoneSettings'
+import useSpeechReading from './useSpeechReading'
+import useVoiceAnswer from './useVoiceAnswer'
 
 declare global {
   interface Window {
-    pywebview?: { api?: InterviewBridge }
+    pywebview?: { api?: InterviewBridge & Partial<TtsBridge> }
   }
 }
 
@@ -64,12 +67,14 @@ const InterviewRecord = memo(function InterviewRecord({ record }: { record: Conc
       {record.turns.map(({ question, answer, evaluation }, index) => (
         <div className="mt-4 space-y-3 text-sm leading-6" key={index}>
           <p className="font-medium text-slate-700">{question}</p>
-          <div className="ml-auto max-w-[86%]">
-            <p className="mb-1 text-right text-xs font-semibold text-slate-500">나의 답변</p>
-            <p className="whitespace-pre-wrap break-words rounded-xl rounded-tr-sm bg-slate-100 px-5 py-3 text-slate-800">{answer}</p>
+          <div className="border-t border-slate-100 pt-3">
+            <p className="mb-1 font-medium text-slate-600">나의 답변</p>
+            <p className="whitespace-pre-wrap break-words text-slate-800">{answer}</p>
           </div>
           {evaluation && (
-            <dl className="max-w-[90%] space-y-3 rounded-xl rounded-tl-sm border border-slate-200 bg-slate-50 px-5 py-4 text-slate-700">
+            <div className="border-t border-slate-100 pt-3">
+            <p className="mb-2 font-medium text-slate-600">평가</p>
+            <dl className="space-y-3 text-slate-700">
               {evaluationLabels.map(([key, label]) => {
                 const points = evaluation[key]
                 return (
@@ -82,6 +87,7 @@ const InterviewRecord = memo(function InterviewRecord({ record }: { record: Conc
                 )
               })}
             </dl>
+            </div>
           )}
         </div>
       ))}
@@ -93,6 +99,34 @@ const InterviewRecord = memo(function InterviewRecord({ record }: { record: Conc
 })
 
 type Operation = 'evaluate' | 'generate' | 'redraw' | 'next' | 'end' | 'scope' | 'restart' | 'sync' | 'reload'
+
+function ReadingControls({ status, playLabel, stopLabel, play, stop, disabled, showBusyStatus = true }: {
+  status: NonNullable<ReturnType<typeof useSpeechReading>['reading']>['status'] | undefined
+  playLabel: string
+  stopLabel: string
+  play: () => void
+  stop: () => void
+  disabled?: boolean
+  showBusyStatus?: boolean
+}) {
+  const busy = status === 'synthesizing' || status === 'playing'
+  return (
+    <div className="reading-controls">
+      <button type="button" className="interview-button" disabled={disabled} onClick={busy ? stop : play}>
+        {busy ? stopLabel : playLabel}
+      </button>
+      {status === 'failed'
+        ? <p role="alert" className="text-sm text-rose-800">음성을 재생하지 못했습니다.</p>
+        : <p role="status" className="sr-only">
+          {status === 'completed' && '읽기 완료'}
+          {status === 'stopped' && '읽기 중지됨'}
+        </p>}
+      {busy && showBusyStatus && <span role="status" className="text-sm text-slate-600">
+        {status === 'playing' ? '읽는 중' : '음성 준비 중'}
+      </span>}
+    </div>
+  )
+}
 type EvaluationMode = Pick<InterviewState, 'evaluation_mode' | 'question_generation_available'>
 type InterviewRequest = {
   action: Exclude<Operation, 'scope' | 'sync'>
@@ -111,7 +145,11 @@ function sameScope(left: ReadonlySet<string>, right: ReadonlySet<string>) {
 }
 
 type AnswerFormProps = {
-  initialDraft: string
+  draft: string
+  voiceBusy: boolean
+  readingControls?: React.ReactNode
+  voiceControls?: React.ReactNode
+  onStart?: () => void
   onDraftChange: (draft: string) => void
   syncFailed: boolean
   state: InterviewState
@@ -124,8 +162,7 @@ type AnswerFormProps = {
   onEnd: () => void
 }
 
-function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp, generationProgress, syncFailed, onSubmit, onRedraw, onNext, onEnd }: AnswerFormProps) {
-  const [draft, setDraft] = useState(initialDraft)
+function AnswerForm({ draft, voiceBusy, readingControls, voiceControls, onStart, onDraftChange, state, operation, hasFollowUp, generationProgress, syncFailed, onSubmit, onRedraw, onNext, onEnd }: AnswerFormProps) {
   const starting = state.status === 'ready' && !state.question
   const generating = !!generationProgress || operation === 'generate' || state.status === 'generating_question'
   const evaluating = !generating && (operation === 'evaluate' || state.busy)
@@ -133,10 +170,7 @@ function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp
   const failedQuestion = state.status === 'question_error'
   const unavailable = state.status === 'question_unavailable' || (starting && state.question_generation_available === false)
   const failed = failedAnswer || failedQuestion
-  const canSubmit = !syncFailed && !operation && !evaluating && !generating && !unavailable && (failed || !!draft.trim())
-  const geminiNotice = failedQuestion
-    ? '첫 질문을 생성할 때 선택한 주제·단원·개념 이름이 Google Gemini로 전송됩니다.'
-    : '답변을 평가할 때 현재 질문과 답변, 같은 개념의 이전 질문과 답변이 Google Gemini로 전송됩니다.'
+  const canSubmit = !voiceBusy && !syncFailed && !operation && !evaluating && !generating && !unavailable && (failed || !!draft.trim())
 
   return (
     <form className="answer-form" onSubmit={(event) => {
@@ -150,11 +184,7 @@ function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp
         {!generating && (starting || state.question) && <textarea
           id="answer"
           value={draft}
-          onChange={(event) => {
-            const answer = event.target.value
-            setDraft(answer)
-            onDraftChange(answer)
-          }}
+          onChange={(event) => onDraftChange(event.target.value)}
           readOnly={!!operation || evaluating || failed || unavailable}
           rows={4}
           placeholder={starting ? '시작 메시지를 입력하세요' : '답변을 입력하세요'}
@@ -169,10 +199,9 @@ function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp
             {failedAnswer && ' 같은 답변을 재시도하거나 면접을 종료할 수 있습니다.'}
           </p>
         )}
-        {state.evaluation_mode === 'gemini' && !starting && !generating && !evaluating && !unavailable && (
-          <p id="gemini-transfer-notice" className="px-1 py-2 text-xs leading-5 text-slate-600">{geminiNotice}</p>
-        )}
-        <div className="answer-actions">
+      </div>
+      <div className="answer-navigation">
+          {onStart && <button type="button" className="interview-button primary" disabled={syncFailed || !!operation} onClick={onStart}>시작</button>}
           {state.status === 'ready' && !generating && (
             <button type="button" className="interview-button" disabled={syncFailed || !!operation} onClick={onRedraw}>
               새 질문 선택
@@ -183,6 +212,8 @@ function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp
               {generationProgress || failedQuestion || state.status === 'question_unavailable' ? '개념 건너뛰기' : '다음 개념'}
             </button>
           )}
+          {readingControls}
+          {voiceControls}
           <button type="button" className="interview-button" disabled={syncFailed || operation === 'sync' || operation === 'scope' || operation === 'redraw' || operation === 'end'} onClick={onEnd}>
             면접 종료
           </button>
@@ -192,9 +223,27 @@ function AnswerForm({ initialDraft, onDraftChange, state, operation, hasFollowUp
               : undefined}>
             {failed ? '재시도' : starting ? '면접 시작' : '답변 제출'} <Icon name="send" />
           </button>
-        </div>
       </div>
     </form>
+  )
+}
+
+function InterviewFooter({ state, operation, generationProgress }: Pick<AnswerFormProps, 'state' | 'operation' | 'generationProgress'>) {
+  if (state.evaluation_mode !== 'gemini') return null
+
+  const ready = state.status === 'ready'
+  const showTransfer = !(ready && !state.question) && !generationProgress && !state.busy &&
+    operation !== 'generate' && operation !== 'evaluate' &&
+    state.status !== 'generating_question' && state.status !== 'question_unavailable'
+  if (!ready && !showTransfer) return null
+
+  return (
+    <footer className="mt-auto space-y-1 pt-8 text-center text-xs leading-5 text-slate-600">
+      {ready && <p id="gemini-generation-notice">저장된 질문이 없으면 주제·단원·개념 이름을 Gemini로 보냅니다.</p>}
+      {showTransfer && <p id="gemini-transfer-notice">{state.status === 'question_error'
+        ? '첫 질문 생성에 주제·단원·개념 이름을 Gemini로 보냅니다.'
+        : '평가에 현재 및 같은 개념의 이전 문답을 Gemini로 보냅니다.'}</p>}
+    </footer>
   )
 }
 
@@ -242,11 +291,12 @@ export default function App() {
   const [bridge, setBridge] = useState(window.pywebview?.api)
   const [state, setState] = useState<InterviewState>()
   const answerDraft = useRef('')
-  const [answerVersion, setAnswerVersion] = useState(0)
-  const clearAnswerDraft = useCallback(() => {
-    answerDraft.current = ''
-    setAnswerVersion((version) => version + 1)
+  const [draft, setDraft] = useState('')
+  const updateAnswerDraft = useCallback((value: string) => {
+    answerDraft.current = value
+    setDraft(value)
   }, [])
+  const clearAnswerDraft = useCallback(() => updateAnswerDraft(''), [updateAnswerDraft])
   const [previousDrafts, setPreviousDrafts] = useState<{ question: string; answer: string }[]>([])
   const syncDraftOrigin = useRef<InterviewState | undefined>(undefined)
   const [operation, setOperation] = useState<Operation>()
@@ -261,6 +311,31 @@ export default function App() {
   const [settingsMessage, setSettingsMessage] = useState('')
   const [keyDrafts, setKeyDrafts] = useState<Record<ProviderId, string>>({ gemini: '', openai: '' })
   const [settingsBusy, setSettingsBusy] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<'sound' | 'api'>('sound')
+  const soundSettingsOpen = settingsOpen && settingsTab === 'sound'
+  const [outputDraft, setOutputDraft] = useState<{ deviceId: string | null; volume: number }>()
+  const [outputDevices, setOutputDevices] = useState<{ id: string; name: string }[]>()
+  const [outputDevicesError, setOutputDevicesError] = useState(false)
+  const [outputDevicesAttempt, setOutputDevicesAttempt] = useState(0)
+  const pendingSpeechStart = useRef(Promise.resolve())
+
+  useEffect(() => {
+    if (!soundSettingsOpen) return
+    let active = true
+    setOutputDevicesError(false)
+    async function loadDevices() {
+      try {
+        const result = await bridge?.tts_devices?.()
+        if (active && result?.ok) setOutputDevices(result.devices)
+        else if (active) setOutputDevicesError(true)
+      } catch {
+        if (active) setOutputDevicesError(true)
+      }
+    }
+    void loadDevices()
+    return () => { active = false }
+  }, [bridge, soundSettingsOpen, outputDevicesAttempt])
   const [library, setLibrary] = useState<ReturnType<typeof indexLibrary>>()
   const [libraryError, setLibraryError] = useState(false)
   const [libraryAttempt, setLibraryAttempt] = useState(0)
@@ -270,6 +345,8 @@ export default function App() {
   const [openBranches, setOpenBranches] = useState<ReadonlySet<string>>(() => new Set())
   const [learningConcept, setLearningConcept] = useState<string>()
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'authoring'>('learn')
+  const [interviewStarted, setInterviewStarted] = useState(false)
+  const lastAutoRead = useRef<number>(undefined)
   const pending = useRef<Operation | undefined>(undefined)
   const reloadRequest = useRef<{ id: string; active: boolean } | undefined>(undefined)
   const [reloadPending, setReloadPending] = useState(false)
@@ -431,6 +508,7 @@ export default function App() {
 
   async function reloadKnowledge(retry = false) {
     if (!bridge || reloadRequest.current?.active) return
+    voice.cancel()
     const request = { id: (retry && reloadRequest.current?.id) || crypto.randomUUID(), active: true }
     reloadRequest.current = request
     setReloadPending(true)
@@ -569,6 +647,12 @@ export default function App() {
     if (generationToken !== undefined) skippedGeneration.current = generationToken
     const id = ++requestId.current
     pending.current = action
+    voice.cancel()
+    if (action === 'restart') {
+      setInterviewStarted(false)
+      lastAutoRead.current = undefined
+    }
+    if (action === 'evaluate' || action === 'generate') setInterviewStarted(true)
     // Keep the capability from the operation's start even if settings change while it runs.
     canPollGeneration.current = state?.question_generation_available !== false
     setOperation(action)
@@ -654,6 +738,43 @@ export default function App() {
   const learningIndex = learningConcept ? library?.studyIndexById.get(learningConcept) ?? 0 : 0
   const currentLearningConcept = studyConcepts?.[learningIndex]
   const nextLearningConcept = studyConcepts?.[learningIndex + 1] ?? studyConcepts?.[0]
+  const interviewQuestion = activeTab === 'interview' && !finished && operation !== 'end' &&
+    operation !== 'restart' && !generationProgress ? state?.question : undefined
+  const interviewQuestionVersion = interviewQuestion ? state?.question_version : undefined
+  const speechScope = studying ? currentLearningConcept?.id : interviewQuestionVersion
+  const savedDeviceId = settings?.tts_device_id ?? null
+  const savedVolume = settings?.tts_volume ?? 1
+  const output = outputDraft ?? { deviceId: savedDeviceId, volume: savedVolume }
+  const missingDevice = output.deviceId !== null && outputDevices !== undefined &&
+    !outputDevices.some(({ id }) => id === output.deviceId)
+  const { reading, read, stop, isActive: isReading } = useSpeechReading(bridge, speechScope, pendingSpeechStart, savedDeviceId, savedVolume)
+  const speakerTest = useSpeechReading(bridge, soundSettingsOpen ? 'speaker-test' : undefined,
+    pendingSpeechStart, output.deviceId, output.volume)
+  const speakerTestStatus = speakerTest.reading?.status
+  const speakerTestActive = speakerTestStatus === 'playing' || speakerTestStatus === 'synthesizing'
+  const autoRead = settings?.interview_auto_read !== false
+  const interviewReadingStatus = interviewQuestionVersion !== undefined && reading?.itemId === interviewQuestionVersion
+    ? reading.status : undefined
+  const readingBusy = interviewReadingStatus === 'synthesizing' || interviewReadingStatus === 'playing'
+  const voiceQuestion = interviewStarted && !operation && !state?.busy && !syncFailed && !reloadPending && !settingsOpen &&
+    (state?.status === 'ready' || state?.status === 'active') ? interviewQuestionVersion : undefined
+  const voice = useVoiceAnswer(bridge, voiceQuestion, (text) => {
+    const current = answerDraft.current
+    updateAnswerDraft(current.trim() ? `${current}\n${text}` : text)
+  })
+  const canRecord = voiceQuestion !== undefined && !!(settings || settingsReadError) && !readingBusy && !speakerTestActive &&
+    (!autoRead || interviewReadingStatus === 'completed' || interviewReadingStatus === 'stopped' || interviewReadingStatus === 'failed')
+
+  useEffect(() => {
+    if (interviewQuestionVersion === undefined) {
+      lastAutoRead.current = undefined
+      return
+    }
+    if ((!settings && !settingsReadError) || !autoRead || !interviewStarted || !interviewQuestion ||
+        lastAutoRead.current === interviewQuestionVersion) return
+    lastAutoRead.current = interviewQuestionVersion
+    void read(interviewQuestionVersion, interviewQuestion)
+  }, [autoRead, interviewQuestion, interviewQuestionVersion, interviewStarted, read, settings, settingsReadError])
 
   function toggleBranch(key: string) {
     setOpenBranches((current) => {
@@ -677,6 +798,7 @@ export default function App() {
     if (pending.current === 'scope') return
 
     pending.current = 'scope'
+    voice.cancel()
     const id = ++requestId.current
     setOperation('scope')
     setBridgeError('')
@@ -746,19 +868,101 @@ export default function App() {
         </div>
         <nav className="mode-switch" aria-label="앱 화면">
           <button type="button" aria-pressed={activeTab === 'interview'} onClick={() => setActiveTab('interview')}>면접 모드</button>
-          <button type="button" aria-pressed={activeTab === 'learn'} onClick={() => setActiveTab('learn')}>공부 모드</button>
+          <button type="button" aria-pressed={activeTab === 'learn'} onClick={() => { voice.cancel(); setActiveTab('learn') }}>공부 모드</button>
         </nav>
       </header>
 
-      <dialog ref={settingsDialog} aria-labelledby="settings-title" className="settings-dialog" onClick={(event) => {
+      <dialog ref={settingsDialog} aria-labelledby="settings-title" className="settings-dialog" onClose={() => {
+        if (settingsDialog.current?.open) return
+        speakerTest.stop()
+        setSettingsOpen(false)
+      }} onClick={(event) => {
         if (event.target === event.currentTarget) event.currentTarget.close()
       }}>
         <section className="settings-content space-y-5">
           <div className="mb-6 flex items-center justify-between gap-3">
-            <h2 id="settings-title" className="text-lg font-semibold">AI 모델 설정</h2>
+            <h2 id="settings-title" className="text-lg font-semibold">설정</h2>
             <button type="button" className="icon-button" autoFocus onClick={() => settingsDialog.current?.close()} aria-label="설정 닫기"><Icon name="x" /></button>
           </div>
+          <div className="settings-tabs" role="tablist" aria-label="설정 종류">
+            {(['sound', 'api'] as const).map((tab) => (
+              <button type="button" key={tab} id={`settings-tab-${tab}`} role="tab"
+                aria-controls={`settings-panel-${tab}`} aria-selected={settingsTab === tab}
+                tabIndex={settingsTab === tab ? 0 : -1} onClick={() => setSettingsTab(tab)}
+                onKeyDown={(event) => {
+                  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                  event.preventDefault()
+                  const next = event.key === 'Home' ? 'sound' : event.key === 'End' ? 'api' : tab === 'sound' ? 'api' : 'sound'
+                  setSettingsTab(next)
+                  document.getElementById(`settings-tab-${next}`)?.focus()
+                }}>
+                {tab === 'sound' ? '소리 설정' : 'API 설정'}
+              </button>
+            ))}
+          </div>
           {settings && providerSettings ? <>
+          <div id="settings-panel-sound" role="tabpanel" aria-labelledby="settings-tab-sound"
+            hidden={settingsTab !== 'sound'} className="space-y-5">
+            {soundSettingsOpen && <MicrophoneSettings bridge={bridge} savedDeviceId={settings.mic_device_id ?? null}
+              savingDisabled={settingsBusy || reloadPending} applySettings={applySettings} />}
+            <fieldset className="space-y-2">
+              <legend className="mb-2 text-sm font-medium text-slate-700">음성 출력</legend>
+              <div className="device-picker">
+              <label className="block min-w-0 text-sm">
+                스피커·헤드폰
+                <select className="settings-input" value={output.deviceId ?? ''} onChange={(event) =>
+                  setOutputDraft({ ...output, deviceId: event.target.value || null })}>
+                  <option value="">Windows 기본 장치</option>
+                  {output.deviceId !== null && !outputDevices?.some(({ id }) => id === output.deviceId) &&
+                    <option value={output.deviceId} disabled>{output.deviceId}{missingDevice ? ' (사용할 수 없음)' : ''}</option>}
+                  {outputDevices?.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+                </select>
+              </label>
+              <button type="button" className="interview-button" onClick={() => setOutputDevicesAttempt((attempt) => attempt + 1)}>
+                장치 목록 새로고침
+              </button>
+              </div>
+              {outputDevicesError ? <p role="alert" className="text-sm text-rose-800">출력 장치 목록을 불러오지 못했습니다.</p>
+                : missingDevice && <p role="alert" className="text-sm text-rose-800">선택한 장치를 사용할 수 없습니다. Windows 기본 장치 또는 다른 장치를 선택해 주세요.</p>}
+              <label className="block text-sm">
+                TTS 음량 {Math.round(output.volume * 100)}%
+                <input className="block w-full" type="range" min="0" max="1" step="0.01" value={output.volume}
+                  onChange={(event) => setOutputDraft({ ...output, volume: event.target.valueAsNumber })} />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="interview-button" disabled={!bridge?.tts_test || missingDevice} onClick={() => {
+                  if (reading?.status === 'synthesizing' || reading?.status === 'playing') stop()
+                  void speakerTest.read('speaker-test')
+                }}>스피커 테스트</button>
+                {speakerTestActive && <button type="button" className="interview-button" onClick={speakerTest.stop}>테스트 중지</button>}
+                <button type="button" className="interview-button ml-auto"
+                  disabled={!bridge?.save_tts_output || !outputDraft || settingsBusy || reloadPending || missingDevice}
+                  onClick={async () => {
+                    if (!bridge?.save_tts_output) return
+                    if (await applySettings(() => bridge.save_tts_output!(output.deviceId, output.volume))) {
+                      setOutputDraft((current) => current === outputDraft ? undefined : current)
+                    }
+                  }}>음성 출력 저장</button>
+              </div>
+              {speakerTestStatus && <p role={speakerTestStatus === 'failed' ? 'alert' : 'status'}
+                className={speakerTestStatus === 'failed' ? 'text-sm text-rose-800' : 'sr-only'}>
+                {speakerTestActive ? '테스트음을 재생 중입니다.'
+                  : speakerTestStatus === 'completed' ? '스피커 테스트를 완료했습니다.'
+                  : speakerTestStatus === 'stopped' ? '스피커 테스트를 중지했습니다.'
+                  : '테스트음을 재생하지 못했습니다.'}
+              </p>}
+            </fieldset>
+            <label className="flex items-center gap-2 border-t border-slate-200 pt-4 text-sm">
+              <input type="checkbox" checked={autoRead} disabled={settingsBusy || reloadPending || !bridge?.save_interview_auto_read}
+                onChange={(event) => {
+                  const enabled = event.target.checked
+                  if (bridge?.save_interview_auto_read) void applySettings(() => bridge.save_interview_auto_read!(enabled))
+                }} />
+              면접 질문 자동 읽기
+            </label>
+          </div>
+          <div id="settings-panel-api" role="tabpanel" aria-labelledby="settings-tab-api"
+            hidden={settingsTab !== 'api'} className="space-y-5">
             <fieldset>
               <legend className="mb-2 text-sm font-medium text-slate-700">다음 면접 제공자</legend>
               <div className="grid grid-cols-2 gap-2">
@@ -766,30 +970,32 @@ export default function App() {
                   <label className="provider-card" key={provider}>
                     <input type="radio" name="provider" value={provider} checked={providerSettings.provider === provider} onChange={() => setSettingsDraft({ provider, models: providerSettings.models })} />
                     <span className="block text-sm font-semibold">{provider === 'gemini' ? 'Gemini' : 'Codex'}</span>
-                    <span className="mt-1 block text-xs text-slate-500">{provider === 'gemini' ? 'Google AI' : 'OpenAI'}</span>
                   </label>
                 ))}
               </div>
             </fieldset>
             <div className="grid gap-3">
-              {(['gemini', 'openai'] as const).map((provider) => <label key={provider} className="block text-sm font-semibold">
-                {provider === 'gemini' ? 'Gemini 모델' : 'OpenAI 모델'}
-                <input className="settings-input" value={providerSettings.models[provider]} maxLength={120} onChange={(event) => setSettingsDraft({ provider: providerSettings.provider, models: { ...providerSettings.models, [provider]: event.target.value } })} />
-              </label>)}
-            </div>
-            <div className="grid gap-3">
-              {(['gemini', 'openai'] as const).map((provider) => <div key={provider} className="rounded-xl border border-slate-200 p-4">
-                <h3 className="font-semibold">{provider === 'gemini' ? 'Gemini API 키' : 'OpenAI API 키'}</h3>
-                <p className="mt-2 text-[11px] leading-5 text-slate-500">{settings.key_registered[provider] ? '키 등록됨 · 입력하면 키를 교체합니다.' : '키가 등록되지 않았습니다.'}</p>
+              {(['gemini', 'openai'] as const).map((provider) => <section key={provider} className="space-y-3 border-t border-slate-200 pt-4">
+                <label className="block text-sm font-medium">
+                  {provider === 'gemini' ? 'Gemini 모델' : 'OpenAI 모델'}
+                  <input className="settings-input" value={providerSettings.models[provider]} maxLength={120} onChange={(event) => setSettingsDraft({ provider: providerSettings.provider, models: { ...providerSettings.models, [provider]: event.target.value } })} />
+                </label>
+                <div role="group" aria-labelledby={`${provider}-key-title`}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 id={`${provider}-key-title`} className="font-semibold">{provider === 'gemini' ? 'Gemini API 키' : 'OpenAI API 키'}</h3>
+                  <span className="text-sm text-slate-600">{settings.key_registered[provider] ? '등록됨' : '미등록'}</span>
+                </div>
                 <label className="mt-3 block text-sm font-medium" htmlFor={`${provider}-key`}>새 키</label>
                 <input id={`${provider}-key`} type="password" autoComplete="new-password" value={keyDrafts[provider]} onChange={(event) => setKeyDrafts({ ...keyDrafts, [provider]: event.target.value })} className="settings-input" placeholder="저장 후 다시 표시되지 않습니다." />
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button type="button" className="interview-button primary" disabled={reloadPending || settingsBusy || !keyDrafts[provider].trim()} onClick={() => void saveKey(provider)}>{settings.key_registered[provider] ? '키 교체' : '키 등록'}</button>
                   <button type="button" className="interview-button" disabled={reloadPending || settingsBusy || !settings.key_registered[provider]} onClick={() => void applySettings(() => bridge!.delete_api_key(provider))}>키 삭제</button>
                 </div>
-              </div>)}
+                </div>
+              </section>)}
             </div>
             <button type="button" className="settings-save" disabled={reloadPending || settingsBusy} onClick={() => void saveProviderSettings()}>제공자·모델 저장</button>
+          </div>
           </> : settingsReadError ? (
             <div className="space-y-2">
               <p role="alert" className="text-sm text-rose-800">{settingsReadError}</p>
@@ -817,9 +1023,9 @@ export default function App() {
       {activeTab !== 'authoring' && <aside id="topic-sidebar" className="topic-sidebar" data-open={sidebarOpen} aria-label={sidebarLabel}>
         <div className="sidebar-heading">
           <h2 className="text-sm font-semibold">{sidebarLabel}</h2>
+          {!studying && <span className="scope-count">{selected.size}개 선택</span>}
           <button type="button" className="icon-button sidebar-toggle" onClick={() => setSidebarOpen(false)} aria-label="주제 메뉴 닫기"><Icon name="x" /></button>
         </div>
-        {!studying && <div className="scope-count"><span>선택된 개념</span><span>{selected.size}</span></div>}
         <div className="topic-scroll">
           {!library && (libraryError
             ? <p role="alert">학습 자료를 불러오지 못했습니다.</p>
@@ -875,8 +1081,12 @@ export default function App() {
           )}
         </div>
         <div className="sidebar-footer">
-          <button type="button" className="settings-trigger" onClick={() => { setSidebarOpen(false); setActiveTab('authoring') }}><Icon name="file-plus" /> 데이터 생성</button>
-          <button type="button" className="settings-trigger" onClick={() => settingsDialog.current?.showModal()}><Icon name="gear" /> 설정</button>
+          <button type="button" className="settings-trigger" onClick={() => { voice.cancel(); setSidebarOpen(false); setActiveTab('authoring') }}><Icon name="file-plus" /> 데이터 생성</button>
+          <button type="button" className="settings-trigger" onClick={() => {
+            voice.cancel()
+            settingsDialog.current?.showModal()
+            setSettingsOpen(true)
+          }}><Icon name="gear" /> 설정</button>
         </div>
       </aside>}
 
@@ -894,7 +1104,9 @@ export default function App() {
               {bridgeError && <p role="alert" className="mb-4 text-rose-800">{bridgeError}</p>}
               {currentLearningConcept ? (
                 <div className="space-y-5">
-                    {currentLearningConcept.concept.questions.map((question) => (
+                    {currentLearningConcept.concept.questions.map((question, index, questions) => {
+                      const status = reading?.itemId === question.id ? reading.status : undefined
+                      return (
                       <section key={question.id} className="panel">
                         <div className="question-header">
                           <div className="question-meta">
@@ -905,18 +1117,21 @@ export default function App() {
                         </div>
                         <div className="panel-body">
                           <article className="study-answer">
-                            <h3 className="mb-3 border-l-2 border-blue-600 pl-3 text-sm font-semibold text-slate-800">예시 답안</h3>
+                            <h3 className="mb-3 text-sm font-semibold text-slate-800">예시 답안</h3>
                             <p className="whitespace-pre-wrap break-words text-base leading-8 text-slate-700">{question.example_answer}</p>
                           </article>
+                          <div className="mt-4 flex flex-wrap items-start gap-2">
+                            {index === questions.length - 1 && <button type="button" className="interview-button primary" onClick={() => {
+                              setLearningConcept((nextLearningConcept ?? currentLearningConcept).id)
+                              window.scrollTo(0, 0)
+                            }}>다음 개념</button>}
+                            <ReadingControls status={status} playLabel="읽기" stopLabel="중지" stop={stop}
+                              play={() => void read(question.id, question.prompt, question.example_answer?.trim() ? question.example_answer : undefined)} />
+                          </div>
                         </div>
                       </section>
-                    ))}
-                    <div className="flex justify-end">
-                      <button type="button" className="interview-button primary" onClick={() => {
-                        setLearningConcept((nextLearningConcept ?? currentLearningConcept).id)
-                        window.scrollTo(0, 0)
-                      }}>다음 개념</button>
-                    </div>
+                      )
+                    })}
                 </div>
               ) : <section className="panel panel-empty space-y-3">
                 {libraryError
@@ -975,25 +1190,55 @@ export default function App() {
                       <span>{generationProgress?.concept_name ?? state.concept_name}</span>
                     </div>
                     {!generationProgress && state.question && <h2 className="question-text">{state.question}</h2>}
+                    {readingBusy && <p role="status" className="question-reading-status">
+                      {interviewReadingStatus === 'playing' ? '읽는 중' : '음성 준비 중'}
+                    </p>}
                     {state.status === 'ready' && !state.question && !operation && (
                       <h2 className="question-text">메시지를 보내 면접을 시작하세요</h2>
                     )}
                   </div>
-                  {state.evaluation_mode === 'gemini' && state.status === 'ready' && (
-                    <p id="gemini-generation-notice" className="px-6 pb-3 text-sm leading-6 text-slate-600">
-                      Gemini는 저장된 질문이 없는 개념의 첫 질문을 생성할 때 그 개념의 주제·단원·개념 이름을 Google로 보냅니다. 면접 시작, 다음 개념 선택, 개념 건너뛰기, 평가 후 자동 이동 중에 전송될 수 있습니다.
-                    </p>
-                  )}
                   <AnswerForm
-                    key={answerVersion}
-                    initialDraft={answerDraft.current}
-                    onDraftChange={(draft) => { answerDraft.current = draft }}
+                    draft={draft}
+                    onStart={interviewQuestion && interviewQuestionVersion !== undefined && !interviewStarted
+                      ? () => setInterviewStarted(true) : undefined}
+                    voiceBusy={!!voice.state}
+                    readingControls={interviewQuestion && interviewQuestionVersion !== undefined && interviewStarted && (
+                      <ReadingControls status={interviewReadingStatus} playLabel="다시 듣기" stopLabel="읽기 중지"
+                        showBusyStatus={false}
+                        disabled={!!voice.state}
+                        play={() => { if (!voice.isActive()) void read(interviewQuestionVersion, interviewQuestion) }} stop={stop} />
+                    )}
+                    voiceControls={voice.available && interviewStarted ? (
+                      <div className="answer-voice">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {!voice.state && <button type="button" className="interview-button" disabled={!canRecord}
+                            onClick={() => {
+                              if (canRecord && !pending.current && !isReading() && !speakerTest.isActive()) {
+                                void voice.start(settings?.mic_device_id ?? null)
+                              }
+                            }}>녹음 시작</button>}
+                          {voice.state?.phase === 'recording' && <button type="button" className="interview-button" onClick={voice.stop}>녹음 종료</button>}
+                          {voice.state && <button type="button" className="interview-button" aria-label="음성 답변 취소" onClick={() => voice.cancel(true)}>취소</button>}
+                        </div>
+                        {voice.state && <p role="status" className="text-sm text-slate-600">
+                          {voice.state.phase === 'opening' && '마이크를 여는 중입니다.'}
+                          {voice.state.phase === 'recording' && `녹음 중 · ${Math.floor(voice.state.elapsedMs / 1000)}초 / 180초`}
+                          {voice.state.phase === 'stopping' && '녹음을 종료하고 있습니다.'}
+                          {voice.state.phase === 'transcribing' && '음성을 텍스트로 변환하고 있습니다.'}
+                        </p>}
+                        {voice.notice && <p role={voice.notice.error ? 'alert' : 'status'} className={voice.notice.error ? 'text-sm text-rose-800' : 'text-sm text-slate-600'}>
+                          {voice.notice.text}
+                        </p>}
+                      </div>
+                    ) : undefined}
+                    onDraftChange={updateAnswerDraft}
                     state={state}
                     operation={operation}
                     hasFollowUp={hasFollowUp}
                     generationProgress={generationProgress}
                     syncFailed={syncFailed || reloadPending}
                     onSubmit={(draft) => {
+                      if (voice.isActive()) return
                       if (state.status === 'error') void run('evaluate', bridge.retry_answer)
                       else if (state.status === 'question_error') void run('generate', bridge.retry_answer)
                       else void run(state.question ? 'evaluate' : 'generate', (recordStart) => bridge.submit_answer(draft, state.evaluation_mode, recordStart, state.question_version))
@@ -1017,6 +1262,9 @@ export default function App() {
               ))}
             </aside>}
           </div>
+          {activeTab === 'interview' && bridge && state?.concept_id && !finished && (
+            <InterviewFooter state={state} operation={operation} generationProgress={generationProgress} />
+          )}
         </div>
       </main>
     </div>
@@ -1030,7 +1278,7 @@ function settingsErrorText(code: SettingsErrorCode): string {
     encrypt_failed: '키를 보호하지 못했습니다. 기존 저장 데이터는 유지되었습니다.',
     key_file_unavailable: '키 파일을 읽지 못했습니다. 파일 권한과 상태를 확인하세요.',
     settings_unavailable: '설정 파일을 읽지 못했습니다.',
-    invalid_settings: '제공자 또는 모델 설정을 확인해 주세요.',
+    invalid_settings: '입력한 설정 값을 확인해 주세요.',
     invalid_key: '저장할 키를 입력해 주세요.',
     invalid_provider: '지원하지 않는 제공자입니다.',
     write_failed: '파일을 저장하지 못했습니다. 기존 저장 데이터는 유지되었습니다.',

@@ -25,9 +25,9 @@ button:disabled { cursor: not-allowed; }
 .app-brand { @apply flex w-[244px] items-center gap-3; }
 .brand-mark { @apply grid size-9 shrink-0 place-items-center rounded-xl bg-blue-600 text-white; }
 .brand-name { @apply text-lg font-semibold; }
-.mode-switch { @apply absolute left-1/2 flex h-10 -translate-x-1/2 items-center rounded-xl bg-slate-100 p-1; }
-.mode-switch button { @apply whitespace-nowrap rounded-[9px] px-5 py-2 text-sm font-semibold text-slate-500 transition hover:text-slate-700; }
-.mode-switch button[aria-pressed="true"] { @apply bg-white text-slate-900 shadow-sm; }
+.mode-switch { @apply absolute left-1/2 flex h-full -translate-x-1/2 items-stretch; }
+.mode-switch button { @apply whitespace-nowrap border-b-2 border-transparent px-5 text-[15px] font-bold text-slate-500 hover:text-slate-800; }
+.mode-switch button[aria-pressed="true"] { @apply border-blue-600 text-slate-900; }
 .icon-button { @apply grid size-8 shrink-0 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800; }
 
 .topic-sidebar {
@@ -36,9 +36,8 @@ button:disabled { cursor: not-allowed; }
   width: min(var(--sidebar-width), 100vw);
 }
 
-.sidebar-heading { @apply flex items-start justify-between px-5 pt-6 pb-4; }
-.scope-count { @apply mx-5 mb-3 flex items-center justify-between rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600; }
-.scope-count span:last-child { @apply font-semibold tabular-nums text-slate-800; }
+.sidebar-heading { @apply flex items-center justify-between gap-2 px-5 pt-6 pb-4; }
+.scope-count { @apply ml-auto whitespace-nowrap text-sm tabular-nums text-slate-600; }
 .topic-scroll { @apply flex-1 space-y-3 overflow-y-auto px-3 pb-5; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
 .topic-scroll > p { @apply px-2 text-sm leading-relaxed text-slate-600; }
 .sidebar-footer { @apply border-t border-slate-200 p-4; }
@@ -63,7 +62,7 @@ button:disabled { cursor: not-allowed; }
 .tree-branch { @apply min-w-0 flex-1 break-words text-left text-[13px] leading-5 font-medium text-slate-700; }
 .tree-branch svg { @apply absolute left-2 top-1/2 -translate-y-1/2 text-slate-500; transition: rotate 150ms var(--control-ease); }
 .tree-branch[aria-expanded="true"] svg { rotate: 90deg; }
-.tree-children { @apply ml-4 border-l border-slate-200 pl-4; }
+.tree-children { @apply ml-3 border-l border-slate-200 pl-3; }
 .tree-preview-branch { @apply min-h-9 cursor-pointer rounded px-2 py-2 text-sm leading-5 font-medium text-slate-800 hover:bg-slate-100; }
 .tree-leaf { @apply pl-2; }
 .tree-leaf:has([aria-pressed="true"]) { @apply bg-blue-50; }
@@ -88,27 +87,36 @@ button:disabled { cursor: not-allowed; }
 .authoring-preview-concept + .authoring-preview-concept { @apply border-t border-slate-200; }
 .authoring-preview-counts { @apply grid w-fit grid-cols-[3.5rem_auto] gap-2 text-xs leading-5 tabular-nums text-slate-600; }
 .workspace-inner { @apply mx-auto flex max-w-[920px] flex-col px-5 pt-9 pb-7 sm:px-8 lg:px-12 lg:pt-10; min-height: calc(100vh - var(--header-height)); }
-.panel { @apply rounded-2xl border border-slate-200 bg-white; box-shadow: 0 2px 8px rgb(15 23 42 / 3%); }
+.panel { @apply rounded-xl border border-slate-200 bg-white; }
+.question-row { @apply flex flex-wrap items-start justify-between gap-3; }
+.question-row .question-text { @apply min-w-0 flex-1 basis-[min(100%,16rem)]; }
+.reading-controls { @apply flex flex-wrap items-center gap-2; }
 .question-header { @apply border-b border-slate-100 px-6 py-5 sm:px-8; }
+.question-header:has(.question-reading-status) { position: relative; }
+.question-reading-status { @apply absolute right-6 bottom-1 text-xs leading-4 text-slate-600 sm:right-8; }
 .question-text { @apply max-w-2xl break-words text-xl leading-relaxed font-semibold text-slate-900 sm:text-[21px]; word-break: keep-all; overflow-wrap: anywhere; }
 .question-meta { @apply mb-4 flex flex-wrap items-center justify-between gap-2 text-xs font-medium text-slate-500; }
 .question-label { @apply text-slate-600; }
 .panel-body { @apply break-words px-6 py-6 sm:px-8; }
 .panel-empty { @apply flex min-h-40 flex-col items-center justify-center gap-3 px-6 py-6 text-center text-sm text-slate-500 sm:px-8; }
-.study-answer { @apply rounded-lg border border-slate-200 bg-slate-50 p-5 sm:p-6; }
 .study-answer p { word-break: keep-all; overflow-wrap: anywhere; }
 
 .answer-form { @apply border-t border-slate-100 p-4 sm:p-5; }
 .answer-box { @apply space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 focus-within:border-blue-600 focus-within:bg-white; }
 .answer-box textarea:focus-visible { outline: none; }
-.answer-actions { @apply flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3; }
+.answer-navigation { @apply mt-4 flex flex-wrap items-start gap-2 border-t border-slate-200 pt-3; }
+.answer-voice { @apply min-w-0 space-y-2; }
 .interview-button { @apply min-h-9 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 enabled:hover:bg-slate-100 disabled:opacity-45; }
 .interview-button.primary { @apply border-blue-600 bg-blue-600 text-white enabled:hover:border-blue-700 enabled:hover:bg-blue-700; }
 .interview-button.submit-answer { @apply ml-auto flex items-center gap-2 px-4 disabled:border-slate-200 disabled:bg-slate-200 disabled:text-slate-500 disabled:opacity-100; }
 
-.settings-dialog { @apply fixed inset-0 m-auto w-[calc(100%-2.5rem)] max-w-md overflow-auto rounded-2xl bg-white shadow-2xl; max-height: calc(100dvh - 2.5rem); }
+.settings-dialog { @apply fixed inset-0 m-auto w-[calc(100%-2.5rem)] max-w-[520px] overflow-auto rounded-xl bg-white shadow-xl; max-height: calc(100dvh - 2.5rem); }
+.device-picker { @apply grid items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto]; }
 .settings-dialog::backdrop { background: rgb(2 6 23 / 35%); }
 .settings-content { @apply p-6; }
+.settings-tabs { @apply flex gap-1 border-b border-slate-200; }
+.settings-tabs button { @apply -mb-px flex-1 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-600; }
+.settings-tabs button[aria-selected="true"] { @apply border-slate-900 text-slate-900; }
 .provider-card { @apply relative cursor-pointer rounded-lg border border-slate-200 p-3 text-slate-800 hover:bg-slate-50; }
 .provider-card input { @apply sr-only; }
 .provider-card:has(:checked) { @apply border-blue-600 bg-blue-50; }

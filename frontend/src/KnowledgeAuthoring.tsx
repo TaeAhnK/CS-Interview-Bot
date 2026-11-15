@@ -91,7 +91,7 @@ const UnitEditor = memo(function UnitEditor({ unit, index, onEdit, onRemove }: {
     onEdit(index, (current) => ({ ...current, concepts: current.concepts.filter((_, i) => i !== conceptIndex) }))
   }, [index, onEdit])
 
-  return <fieldset className="space-y-3 rounded-xl border border-slate-200 p-4">
+  return <fieldset className="space-y-3 border-t border-slate-200 pt-4">
     <legend className="px-1 text-sm font-semibold">단원 {index + 1}</legend>
     <label className="settings-field">단원명
       <input className="settings-input" value={unit.name} onChange={(event) => {
@@ -132,7 +132,7 @@ const ConceptEditor = memo(function ConceptEditor({ concept, index, onEdit, onRe
         onEdit(index, (current) => ({ ...current, name }))
       }} />
     </label>
-    {concept.questions.map((question, q) => <fieldset key={question.id} className="space-y-3 rounded-lg bg-slate-50 p-3">
+    {concept.questions.map((question, q) => <fieldset key={question.id} className="space-y-3 border-l border-slate-200 pl-3">
       <legend className="text-sm font-semibold">질문 {q + 1}</legend>
       <label className="settings-field">질문 내용
         <input className="settings-input" value={question.prompt} onChange={(event) => editQuestion(q, { prompt: event.target.value })} />
@@ -325,8 +325,7 @@ export default memo(function KnowledgeAuthoring({ bridge, reloading, onSaved }: 
             }} />
         </label>
         <div id="authoring-outline-help" className="space-y-2 text-sm leading-5 text-slate-600">
-          <p>단원은 줄 맨 앞에 적으세요. 개념은 줄 맨 앞이나 한 단계 들여쓰고, 질문과 답안은 각각 한 단계씩 더 들여쓰세요.</p>
-          <p><kbd>Tab</kbd> 공백 두 칸 삽입 <span aria-hidden="true" className="mx-2 text-slate-400">·</span><kbd>Shift+Tab</kbd> 이전 입력칸으로 이동</p>
+          <p><kbd>Tab</kbd> 공백 두 칸 삽입</p>
         </div>
         <button type="button" className="interview-button" onClick={() => void preview()}>미리보기 만들기</button>
       </section>}
@@ -336,7 +335,7 @@ export default memo(function KnowledgeAuthoring({ bridge, reloading, onSaved }: 
           <button type="button" className="interview-button" onClick={() => setEditing(!editing)}>{editing ? '미리보기로 돌아가기' : '트리 편집'}</button>
         </div>
         {previewOutdated && <p id="authoring-outdated-preview" role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-          아래 트리는 이전 원본을 기준으로 합니다. 변경한 원본을 저장하려면 미리보기를 다시 만드세요.
+          본문이 바뀌었습니다. 미리보기를 다시 만드세요.
         </p>}
         {editing
           ? <KnowledgeTree document={document} onChange={editDocument} />
